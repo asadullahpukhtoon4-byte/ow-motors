@@ -13,7 +13,7 @@ import inventory as inventory_mod
 import add_bike as add_bike_mod
 import sold_bikes as sold_mod
 from sold_bikes import SoldBikesFrame
-import booking_letter as booking_mod
+import booking_mod as booking_mod
 import customer_data as customer_mod
 import accounts as accounts_mod
 

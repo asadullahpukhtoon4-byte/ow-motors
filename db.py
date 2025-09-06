@@ -1,5 +1,6 @@
 import sqlite3
 from typing import List, Optional
+import datetime
 
 DB_PATH = "showroom.db"
 
@@ -82,17 +83,31 @@ class DB:
         """)
 
         # Bookings
+        # Bookings (standalone table - not related to inventory/customers)
+       # in db.py, inside _create_tables()
         c.execute("""
             CREATE TABLE IF NOT EXISTS bookings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                inventory_id INTEGER,
-                customer_id INTEGER,
-                booking_date TEXT DEFAULT CURRENT_TIMESTAMP,
-                notes TEXT,
-                FOREIGN KEY (inventory_id) REFERENCES inventory(id),
-                FOREIGN KEY (customer_id) REFERENCES customers(id)
+                booking_no INTEGER UNIQUE,
+                booking_date TEXT DEFAULT CURRENT_DATE,
+                name TEXT,
+                so TEXT,
+                cnic TEXT,
+                phone TEXT,
+                brand TEXT,
+                model TEXT,
+                colour TEXT,
+                specifications TEXT,
+                total_amount REAL,
+                advance REAL,
+                balance REAL,
+                delivery_date TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+
+
 
         # Accounts
         c.execute("""
@@ -247,6 +262,61 @@ class DB:
             """, (name, cnic, phone, address, so))
             self.conn.commit()
             return cur.lastrowid
+
+
+        # ---------- BOOKINGS (standalone) ----------
+        # ---------- BOOKINGS ----------
+    def add_booking(
+            self,
+            booking_date: str,
+            name: str,
+            so: str,
+            cnic: str,
+            phone: str,
+            brand: str,
+            model: str,
+            colour: str,
+            specifications: str,
+            total_amount: float = 0.0,
+            advance: float = 0.0,
+            balance: float = 0.0,
+            delivery_date: str = None,
+        ) -> str:
+        """Insert booking and return booking_no."""
+        cur = self.conn.cursor()
+
+        # insert record with temporary NULL booking_no
+        cur.execute("""
+            INSERT INTO bookings (booking_date, name, so, cnic, phone, brand, model, colour, specifications,
+                                total_amount, advance, balance, delivery_date, booking_no)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+        """, (booking_date, name, so, cnic, phone, brand, model, colour, specifications,
+            total_amount, advance, balance, delivery_date))
+        
+        new_id = cur.lastrowid
+        # Generate booking_no starting at 10000
+        booking_no = str(10000 + new_id)
+
+    # update row with booking_no
+        cur.execute("UPDATE bookings SET booking_no=? WHERE id=?", (booking_no, new_id))
+        self.conn.commit()
+        return booking_no
+
+
+    def list_bookings(self, limit=200):
+        c = self.conn.cursor()
+        c.execute("""
+            SELECT id, booking_no, booking_date, name, so, cnic, phone, brand, model, colour,
+                specifications, total_amount, advance, balance, delivery_date, created_at
+            FROM bookings
+            ORDER BY created_at DESC
+            LIMIT ?
+        """, (limit,))
+        return c.fetchall()
+
+
+
+
 
 
 

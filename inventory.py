@@ -6,6 +6,11 @@ import webbrowser
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import sqlite3
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.utils import simpleSplit
+from PyPDF2 import PdfReader, PdfWriter
+import tempfile, os, json
 
 from db import DB
 
@@ -307,11 +312,9 @@ class InvoiceWindow(tk.Toplevel):
             # ✅ Debug check (optional, for now)
             cur.execute("SELECT customer_address, customer_so, customer_name FROM sold_bikes WHERE id = ?", (sold_id,))
             inserted = cur.fetchone()
-            print("DEBUG inserted sold_bikes:", dict(inserted) if inserted else None)
 
             cur.execute("SELECT id, name, so, cnic, phone, address FROM customers WHERE cnic = ?", (data.get("customer_cnic"),))
             cust = cur.fetchone()
-            print("DEBUG customer row:", dict(cust) if cust else None)
 
             # Upsert customer - MATCH your db.add_or_get_customer signature
             # (name, cnic, phone=None, address=None, so=None)
@@ -480,63 +483,399 @@ class InvoiceWindow(tk.Toplevel):
         # last fallback: HTML
         return self._write_html(out_path.replace(".pdf", ".html"), data)
 
-    def _write_pdf_on_template(self, out_path, data, template_path):
-        from reportlab.pdfgen import canvas
-        from PyPDF2 import PdfReader, PdfWriter
-        import tempfile, os
 
-        # Coordinates tuned for your invoice.pdf (A4)
-        coords = {
-            "date": (460, 810),
-            "invoice_no": (460, 790),
-            "customer_name": (120, 740),
-            "customer_so": (320, 740),
-            "customer_cnic": (120, 720),
-            "customer_contact": (320, 720),
-            "customer_address": (120, 690),
-            "brand": (120, 650),
-            "model": (220, 650),
-            "colour": (320, 650),
-            "variant": (120, 630),
-            "category": (220, 630),
-            "capacity": (320, 630),
-            "engine_no": (120, 610),
-            "chassis_no": (320, 610),
-            "listed_price": (120, 590),
-            "sold_price": (320, 590),
-            "gate_pass": (120, 560),
-            "documents_delivered": (320, 560),
+    # def _write_pdf_on_template(self, out_path, data, template_path):
+    #     """
+    #     Overlay data onto template_path. If template missing, attempt to create one
+    #     from docx (if present). Uses coordinates from assets/detected_coords.json or sensible defaults.
+    #     """
+    #     # ensure template exists (attempt conversion if missing)
+    #     if not os.path.exists(template_path) and os.path.exists(os.path.join(os.path.dirname(__file__), "assets", "ow-invoice.docx")):
+    #         try:
+    #             convert_docx_to_pdf_template(os.path.join(os.path.dirname(__file__), "assets", "ow-invoice.docx"), template_path)
+    #         except Exception as e:
+    #             print("DOCX->PDF template creation failed:", e)
+
+    #     # load coords or defaults
+    #     coords_file = os.path.join(os.path.dirname(__file__), "assets", "detected_coords.json")
+    #     if os.path.exists(coords_file):
+    #         try:
+    #             with open(coords_file, "r", encoding="utf-8") as f:
+    #                 raw_coords = json.load(f)
+    #                 coords = {k.lower(): (float(v[0]), float(v[1])) for k, v in raw_coords.items()}
+    #         except Exception:
+    #             coords = {}
+    #     else:
+    #         coords = {}
+
+    #     # sensible default positions (A4 points; adjust in detected_coords.json)
+    #     defaults = {
+    #         "date": (420, 800),
+    #         "`invoice_no": (420, 782),
+
+    #         "customer_name": (100, 740),
+    #         "customer_so": (300, 740),
+    #         "customer_cnic": (100, 720),
+    #         "customer_contact": (300, 720),
+    #         "customer_address": (100, 700),
+
+    #         "brand": (100, 660),
+    #         "model": (220, 660),
+    #         "colour": (340, 660),
+    #         "year": (100, 640),
+    #         "engine_no": (100, 620),
+    #         "chassis_no": (300, 620),
+
+    #         "listed_price": (100, 600),
+    #         "sold_price": (300, 600),
+
+    #         "gate_pass": (100, 580),
+    #         "documents_delivered": (300, 580),
+
+    #         "footer_left": (40, 140),
+    #         "footer_right": (360, 140),
+    #         "terms": (40, 120),
+
+    #         # shop addresses (static footer)
+    #         "location1": (40, 60),
+    #         "location2": (40, 45),
+    #         "contact": (400, 45),
+    #         # "header": (40, 820),
+    #         # "date": (460, 800),
+    #         # "invoice": (460, 782),
+    #         # "customer_name": (120, 730),
+    #         # "customer_so": (320, 730),
+    #         # "customer_cnic": (120, 712),
+    #         # "customer_contact": (320, 712),
+    #         # "customer_address": (120, 690),
+    #         # "brand": (120, 660),
+    #         # "model": (240, 660),
+    #         # "colour": (360, 660),
+    #         # "variant": (120, 642),
+    #         # "category": (240, 642),
+    #         # "capacity": (360, 642),
+    #         # "engine_no": (120, 618),
+    #         # "chassis_no": (320, 618),
+    #         # "listed_price": (120, 588),
+    #         # "sold_price": (320, 588),
+    #         # "gate_pass": (120, 560),
+    #         # "documents_delivered": (320, 560),
+    #         # "footer_left": (40, 110),
+    #         # "footer_right": (360, 110),
+    #     }
+
+    #     # get coordinate helper
+    #     def pos(key):
+    #         return coords.get(key.lower(), defaults.get(key, (40, 700)))
+
+    #     # create overlay
+    #     overlay_fd, overlay_path = tempfile.mkstemp(suffix=".pdf")
+    #     os.close(overlay_fd)
+    #     c = rl_canvas.Canvas(overlay_path, pagesize=A4)
+    #     width, height = A4
+
+    #     # Draw header (template may lack header)
+    #     hx, hy = pos("header")
+    #     c.setFont("Helvetica-Bold", 18)
+    #     c.drawString(hx, hy, "OW MOTORSPORT")   # main header
+
+    #     # small label "Delivery Receipt / Invoice"
+    #     c.setFont("Helvetica", 10)
+    #     c.drawString(hx, hy - 18, "Delivery Receipt")
+    #     # date & invoice at top-right
+    #     dx, dy = pos("date")
+    #     c.drawString(dx, dy, str(data.get("date", "")))
+    #     ix, iy = pos("invoice")
+    #     c.drawString(ix, iy, f"Invoice No: {data.get('invoice_no','')}")
+
+    #     # Customer block
+    #     c.setFont("Helvetica-Bold", 11)
+    #     cx, cy = pos("customer_name")
+    #     c.drawString(cx, cy, "Name: ")
+    #     c.setFont("Helvetica", 10)
+    #     c.drawString(cx + 48, cy, str(data.get("customer_name", "")))
+
+    #     sox, soy = pos("customer_so")
+    #     c.setFont("Helvetica-Bold", 11)
+    #     c.drawString(sox, soy, "S/O:")
+    #     c.setFont("Helvetica", 10)
+    #     c.drawString(sox + 28, soy, str(data.get("customer_so", "")))
+
+    #     cnx, cny = pos("customer_cnic")
+    #     c.setFont("Helvetica-Bold", 11)
+    #     c.drawString(cnx, cny, "CNIC:")
+    #     c.setFont("Helvetica", 10)
+    #     c.drawString(cnx + 40, cny, str(data.get("customer_cnic", "")))
+
+    #     cellx, celly = pos("customer_contact")
+    #     c.setFont("Helvetica-Bold", 11)
+    #     c.drawString(cellx, celly, "Cell No:")
+    #     c.setFont("Helvetica", 10)
+    #     c.drawString(cellx + 50, celly, str(data.get("customer_contact", "")))
+
+    #     # Address - multiline
+    #     ax, ay = pos("customer_address")
+    #     c.setFont("Helvetica-Bold", 11)
+    #     c.drawString(ax, ay, "Address:")
+    #     c.setFont("Helvetica", 9)
+    #     yy = ay - 12
+    #     for line in (data.get("customer_address", "") or "").splitlines():
+    #         c.drawString(ax, yy, line)
+    #         yy -= 12
+
+    #     # Bike details (structured left column)
+    #     bx, by = pos("brand")
+    #     c.setFont("Helvetica-Bold", 11)
+    #     c.drawString(bx, by, "Brand:")
+    #     c.setFont("Helvetica", 10)
+    #     c.drawString(bx + 50, by, str(data.get("brand", "")))
+
+    #     mox, moy = pos("model")
+    #     c.setFont("Helvetica-Bold", 11)
+    #     c.drawString(mox, moy, "Model:")
+    #     c.setFont("Helvetica", 10)
+    #     c.drawString(mox + 50, moy, str(data.get("model", "")))
+
+    #     colx, coly = pos("colour")
+    #     c.setFont("Helvetica-Bold", 11)
+    #     c.drawString(colx, coly, "Colour:")
+    #     c.setFont("Helvetica", 10)
+    #     c.drawString(colx + 50, coly, str(data.get("colour", "")))
+
+    #     # engine / chassis on their own line
+    #     enx, eny = pos("engine_no")
+    #     c.setFont("Helvetica-Bold", 11)
+    #     c.drawString(enx, eny, "Engine No:")
+    #     c.setFont("Helvetica", 10)
+    #     c.drawString(enx + 70, eny, str(data.get("engine_no", "")))
+
+    #     chx, chy = pos("chassis_no")
+    #     c.setFont("Helvetica-Bold", 11)
+    #     c.drawString(chx, chy, "Chassis No:")
+    #     c.setFont("Helvetica", 10)
+    #     c.drawString(chx + 80, chy, str(data.get("chassis_no", "")))
+
+    #     # prices
+    #     lp_x, lp_y = pos("listed_price")
+    #     c.setFont("Helvetica-Bold", 11)
+    #     c.drawString(lp_x, lp_y, "Listed Price:")
+    #     c.setFont("Helvetica", 10)
+    #     c.drawRightString(lp_x + 120, lp_y, str(data.get("listed_price", "")))
+
+    #     sp_x, sp_y = pos("sold_price")
+    #     c.setFont("Helvetica-Bold", 11)
+    #     c.drawString(sp_x, sp_y, "Sold Price:")
+    #     c.setFont("Helvetica", 10)
+    #     c.drawRightString(sp_x + 120, sp_y, str(data.get("sold_price", "")))
+
+    #     # gate pass / docs
+    #     gp_x, gp_y = pos("gate_pass")
+    #     c.setFont("Helvetica-Bold", 11)
+    #     c.drawString(gp_x, gp_y, "Gate Pass:")
+    #     c.setFont("Helvetica", 10)
+    #     c.drawString(gp_x + 70, gp_y, str(data.get("gate_pass", "")))
+
+    #     doc_x, doc_y = pos("documents_delivered")
+    #     c.setFont("Helvetica-Bold", 11)
+    #     c.drawString(doc_x, doc_y, "Documents Delivered:")
+    #     c.setFont("Helvetica", 10)
+    #     c.drawString(doc_x + 130, doc_y, str(data.get("documents_delivered", "")))
+
+    #     # footer
+    #     fx, fy = pos("footer_left")
+    #     c.setFont("Helvetica", 10)
+    #     c.drawString(fx, fy, "Purchaser’s __________________")
+    #     frx, fry = pos("footer_right")
+    #     c.drawString(frx, fry, "Authorized Signature: __________________")
+
+    #     # small terms block above footer
+    #     terms_y = fy - 22
+    #     c.setFont("Helvetica", 8)
+    #     terms_text = ("The customer has thoroughly inspected the motorcycle at the showroom before delivery. "
+    #                 "After delivery, OW MOTORSPORT will not be responsible for any claims regarding "
+    #                 "physical condition, scratches, dents or minor defects.")
+    #     # wrap terms
+    #     from reportlab.lib.utils import simpleSplit
+    #     lines = simpleSplit(terms_text, "Helvetica", 8, 520)
+    #     ty = terms_y
+    #     for ln in lines:
+    #         c.drawString(40, ty, ln)
+    #         ty -= 10
+
+    #     c.save()
+
+    #     # Merge overlay with template
+    #     try:
+    #         reader = PdfReader(template_path)
+    #         overlay = PdfReader(overlay_path)
+    #         writer = PdfWriter()
+    #         page = reader.pages[0]
+    #         # merge overlay page onto template first page
+    #         page.merge_page(overlay.pages[0])
+    #         writer.add_page(page)
+    #         for p in reader.pages[1:]:
+    #             writer.add_page(p)
+    #         with open(out_path, "wb") as f:
+    #             writer.write(f)
+    #     finally:
+    #         try:
+    #             os.remove(overlay_path)
+    #         except Exception:
+    #             pass
+
+    #     return out_path
+
+
+    def _write_pdf_on_template(self, out_path, data, template_path):
+        """
+        Create a single-page overlay PDF with only values (no labels)
+        and merge onto template_path first page.
+        """
+
+        import os, json, tempfile
+        from reportlab.pdfgen import canvas
+        from reportlab.lib.pagesizes import A4
+        from PyPDF2 import PdfReader, PdfWriter
+
+        # load coordinates (detected_coords.json)
+        coords_path = os.path.join(os.path.dirname(__file__), "assets", "detected_coords.json")
+        coords = {}
+        if os.path.exists(coords_path):
+            try:
+                with open(coords_path, "r", encoding="utf-8") as f:
+                    coords = json.load(f)
+            except Exception:
+                coords = {}
+        # sensible defaults (only used if coords missing)
+        width, height = A4
+        defaults = {
+            "date": [width - 174, height - 50],
+            "invoice_no": [width - 144, height - 64],
+            "customer_name": [90, height - 130],
+            "customer_so": [470, height - 130],
+            "customer_cnic": [90, height - 148],
+            "customer_contact": [320, height - 148],
+            "customer_address": [104, height - 175],
+            "brand": [120, height - 330],
+            "model": [340, height - 330],
+            "colour": [120, height - 355],
+            "engine_no": [370, height - 355],
+            "chassis_no": [130, height - 380],
+            "listed_price": [120, height - 410],
+            "sold_price": [320, height - 410],
+            "gate_pass": [110, height - 438],
+            "documents_delivered": [440, height - 438],
+            "footer_left": [40, height - 520],
+            "footer_right": [360, height - 520]
         }
 
-        # Create overlay with field values
-        overlay_path = os.path.join(tempfile.gettempdir(), "invoice_overlay.pdf")
-        c = canvas.Canvas(overlay_path, pagesize=(595.4, 842))  # A4 size
+        def gpos(key):
+            v = coords.get(key)
+            if isinstance(v, (list, tuple)) and len(v) >= 2:
+                return float(v[0]), float(v[1])
+            d = defaults.get(key, (40, height - 200))
+            return float(d[0]), float(d[1])
+
+        # make temp overlay
+        fd, overlay_path = tempfile.mkstemp(suffix=".pdf")
+        os.close(fd)
+        c = canvas.Canvas(overlay_path, pagesize=A4)
         c.setFont("Helvetica", 10)
+        c.setFillColorRGB(0, 0, 0)
 
-        for key, (x, y) in coords.items():
-            val = str(data.get(key, "") or "")
-            if "\n" in val:
-                yy = y
-                for line in val.splitlines():
-                    c.drawString(x, yy, line)
-                    yy -= 12
+        # helper to write single-line value (no labels)
+        def write_val(key, value, right_align=False, fontsize=10):
+            if value is None:
+                return
+            x, y = gpos(key)
+            txt = str(value)
+            c.setFont("Helvetica", fontsize)
+            if right_align:
+                c.drawRightString(x, y, txt)
             else:
-                c.drawString(x, y, val)
+                c.drawString(x, y, txt)
 
+        # helper to write multiline (address)
+        def write_multiline(key, text, fontsize=9, leading=12):
+            if not text:
+                return
+            x, y = gpos(key)
+            c.setFont("Helvetica", fontsize)
+            # top-down writing inside box: y is starting top
+            yy = y
+            for line in str(text).splitlines():
+                c.drawString(x, yy, line)
+                yy -= leading
+
+        # write basic fields (only values)
+        write_val("date", data.get("date", ""))
+        write_val("invoice_no", data.get("invoice_no", ""))
+        write_val("customer_name", data.get("customer_name", ""))
+        write_val("customer_so", data.get("customer_so", ""))
+        write_val("customer_cnic", data.get("customer_cnic", ""))
+        write_val("customer_contact", data.get("customer_contact", ""))
+        write_multiline("customer_address", data.get("customer_address", ""))
+
+        write_val("brand", data.get("brand", ""))
+        write_val("model", data.get("model", ""))
+        write_val("colour", data.get("colour", ""))
+        write_val("engine_no", data.get("engine_no", ""))
+        write_val("chassis_no", data.get("chassis_no", ""))
+        # prices: right aligned nicer
+        write_val("sold_price", data.get("sold_price", ""), right_align=False)
+
+        # Draw check/X inside checkboxes for gate_pass and documents_delivered
+        def draw_checkbox(key, truthy):
+            # if truthy, draw an X inside a 12x12 box centered on coords or near coords
+            x, y = gpos(key)
+            # try to make the X inside an assumed 12x12 box at around (x,y)
+            # adjust offset so X sits in the box region
+            box_w = 12
+            # position top-left of the small box
+            bx = x
+            by = y - 8
+            if truthy:
+                c.setLineWidth(1.5)
+                # diagonal lines for X
+                c.line(bx + 2, by + 2, bx + box_w - 2, by + box_w - 2)
+                c.line(bx + 2, by + box_w - 2, bx + box_w - 2, by + 2)
+                c.setLineWidth(1.0)
+
+        gp_x, gp_y = coords["gate_pass"]
+        c.rect(gp_x, gp_y, 12, 12, stroke=1, fill=0)   # draw box
+        if str(data.get("gate_pass", "")).lower() in ("yes", "y", "true", "1"):
+            c.setFont("Helvetica-Bold", 12)
+            c.drawString(gp_x + 2, gp_y, "✓")   # draw checkmark
+
+        # Documents Delivered checkbox
+        doc_x, doc_y = coords["documents_delivered"]
+        c.rect(doc_x, doc_y, 12, 12, stroke=1, fill=0)   # draw box
+        if str(data.get("documents_delivered", "")).lower() in ("yes", "y", "true", "1"):
+            c.setFont("Helvetica-Bold", 12)
+            c.drawString(doc_x + 2, doc_y, "✓")
+        
+
+        # done overlay
         c.save()
 
-        # Merge overlay with template
-        reader = PdfReader(template_path)
-        overlay = PdfReader(overlay_path)
-        writer = PdfWriter()
-        page = reader.pages[0]
-        page.merge_page(overlay.pages[0])
-        writer.add_page(page)
-        for p in reader.pages[1:]:
-            writer.add_page(p)
-
-        with open(out_path, "wb") as f:
-            writer.write(f)
+        # merge overlay onto template
+        try:
+            reader = PdfReader(template_path)
+            overlay = PdfReader(overlay_path)
+            writer = PdfWriter()
+            page = reader.pages[0]
+            # merge overlay page onto template first page
+            page.merge_page(overlay.pages[0])
+            writer.add_page(page)
+            # append any remaining pages from template (if multi-page)
+            for p in reader.pages[1:]:
+                writer.add_page(p)
+            with open(out_path, "wb") as f:
+                writer.write(f)
+        finally:
+            try:
+                os.remove(overlay_path)
+            except Exception:
+                pass
 
         return out_path
-
