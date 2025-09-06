@@ -10,19 +10,31 @@ class CustomerFrame(tk.Frame):
 
     def build(self):
         ttk.Label(self, text='Customers', font=('Segoe UI', 14)).pack(pady=6)
-        cols = ('id', 'name', 'cnic', 'phone', 'address')
+
+        # Expanded columns (added SO)
+        cols = ('id', 'name', 'so', 'cnic', 'phone', 'address')
         self.tree = ttk.Treeview(self, columns=cols, show='headings')
+
         for c in cols:
             self.tree.heading(c, text=c.title())
-            self.tree.column(c, width=120)
-        self.tree.pack(fill='both', expand=True)
-        ttk.Button(self, text='Refresh', command=self.load).pack(pady=6)
+            self.tree.column(c, width=140)
+
+        # ✅ You forgot this
+        self.tree.pack(fill="both", expand=True)
+
+        # Add refresh button
+        ttk.Button(self, text="Refresh", command=self.load).pack(pady=6)
+
+        # Load initially
         self.load()
 
     def load(self):
         for r in self.tree.get_children():
             self.tree.delete(r)
-        c = self.db.conn.cursor()
-        c.execute('SELECT * FROM customers ORDER BY id DESC')
-        for row in c.fetchall():
-            self.tree.insert('', 'end', values=(row['id'], row['name'], row['cnic'], row['phone'], row['address']))
+        cur = self.db.conn.cursor()
+        cur.execute("SELECT id, name, so, cnic, phone, address FROM customers ORDER BY id DESC")
+        for row in cur.fetchall():
+            self.tree.insert('', 'end', values=(
+                row['id'], row['name'], row['so'], row['cnic'], row['phone'], row['address']
+            ))
+

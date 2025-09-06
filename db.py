@@ -34,20 +34,36 @@ class DB:
                 category TEXT,
                 capacity TEXT,
                 engine_no TEXT UNIQUE,
-                chassis TEXT UNIQUE,
+                chassis_no TEXT UNIQUE,
                 listed_price REAL,
                 status TEXT
             )
         """)
 
-        # Sold bikes
+        # Sold Bikes
         c.execute("""
             CREATE TABLE IF NOT EXISTS sold_bikes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 inventory_id INTEGER,
+                brand TEXT,
+                model TEXT,
+                colour TEXT,
+                variant TEXT,
+                category TEXT,
+                capacity TEXT,
+                engine_no TEXT,
+                chassis_no TEXT,
+                listed_price REAL,
+                status TEXT,
                 customer_name TEXT,
+                customer_so TEXT,
                 customer_cnic TEXT,
+                customer_contact TEXT,
+                customer_address TEXT,
+                gate_pass TEXT,
+                documents_delivered TEXT,
                 sold_price REAL,
+                invoice_no TEXT,
                 sold_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (inventory_id) REFERENCES inventory(id)
             )
@@ -58,6 +74,7 @@ class DB:
             CREATE TABLE IF NOT EXISTS customers (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT,
+                so TEXT,
                 cnic TEXT UNIQUE,
                 phone TEXT,
                 address TEXT
@@ -106,13 +123,16 @@ class DB:
         return c.fetchone()
 
     # ---------- INVENTORY HELPERS ----------
-    def add_bike(self, brand, model, colour, variant, category, capacity, engine_no, chassis, listed_price, status) -> int:
+    def add_bike(self, brand, model, colour, variant, category, capacity,
+                 engine_no, chassis_no, listed_price, status) -> int:
         c = self.conn.cursor()
         c.execute("""
             INSERT INTO inventory
-            (brand, model, colour, variant, category, capacity, engine_no, chassis, listed_price, status)
+            (brand, model, colour, variant, category, capacity,
+             engine_no, chassis_no, listed_price, status)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (brand, model, colour, variant, category, capacity, engine_no, chassis, listed_price, status))
+        """, (brand, model, colour, variant, category, capacity,
+              engine_no, chassis_no, listed_price, status))
         self.conn.commit()
         return c.lastrowid
 
@@ -121,9 +141,9 @@ class DB:
         q = "SELECT * FROM inventory"
         where = []
         params = []
-        if "chassis" in filters and filters["chassis"]:
-            where.append("chassis LIKE ?")
-            params.append("%" + filters["chassis"] + "%")
+        if "chassis_no" in filters and filters["chassis_no"]:
+            where.append("chassis_no LIKE ?")
+            params.append("%" + filters["chassis_no"] + "%")
         if "engine_no" in filters and filters["engine_no"]:
             where.append("engine_no LIKE ?")
             params.append("%" + filters["engine_no"] + "%")
@@ -141,28 +161,96 @@ class DB:
         c.execute(q, params)
         return c.fetchall()
 
-    def mark_sold(self, inventory_id, customer_name, customer_cnic, sold_price):
-        c = self.conn.cursor()
-        c.execute(
-            "INSERT INTO sold_bikes (inventory_id, customer_name, customer_cnic, sold_price) VALUES (?, ?, ?, ?)",
-            (inventory_id, customer_name, customer_cnic, sold_price),
-        )
-        c.execute("UPDATE inventory SET status = ? WHERE id = ?", ("sold", inventory_id))
+    # ---------- SOLD BIKES HELPERS ----------
+    def add_sold_bike(
+        self,
+        inventory_id: int,
+        brand: str = "",
+        model: str = "",
+        colour: str = "",
+        variant: str = "",
+        category: str = "",
+        capacity: str = "",
+        engine_no: str = "",
+        chassis_no: str = "",
+        listed_price: float = 0.0,
+        status: str = "sold",
+        customer_name: str = "",
+        customer_so: str = "",
+        customer_cnic: str = "",
+        customer_contact: str = "",
+        customer_address: str = "",
+        gate_pass: str = "",
+        documents_delivered: str = "",
+        sold_price: float = 0.0,
+        invoice_no: str = "",
+        sold_at: str = None,
+    ) -> int:
+        """Insert a sold_bikes snapshot, keeping column order safe."""
+        cur = self.conn.cursor()
+        cols = [
+            "inventory_id", "brand", "model", "colour", "variant", "category",
+            "capacity", "engine_no", "chassis_no", "listed_price", "status",
+            "customer_name", "customer_so", "customer_cnic", "customer_contact",
+            "customer_address", "gate_pass", "documents_delivered",
+            "sold_price", "invoice_no", "sold_at"
+        ]
+        vals = [
+            inventory_id, brand, model, colour, variant, category,
+            capacity, engine_no, chassis_no, listed_price, status,
+            customer_name, customer_so, customer_cnic, customer_contact,
+            customer_address, gate_pass, documents_delivered,
+            sold_price, invoice_no, sold_at
+        ]
+        placeholders = ", ".join(["?"] * len(cols))
+        sql = f"INSERT INTO sold_bikes ({', '.join(cols)}) VALUES ({placeholders})"
+        cur.execute(sql, vals)
         self.conn.commit()
+        return cur.lastrowid
+
+
+
+    def list_sold_bikes(self, limit=200):
+        c = self.conn.cursor()
+        c.execute("""
+            SELECT * FROM sold_bikes
+            ORDER BY sold_at DESC
+            LIMIT ?
+        """, (limit,))
+        return c.fetchall()
 
     # ---------- CUSTOMER HELPERS ----------
-    def add_or_get_customer(self, name, cnic, phone=None, address=None):
-        c = self.conn.cursor()
-        c.execute("SELECT * FROM customers WHERE cnic = ?", (cnic,))
-        row = c.fetchone()
+    def add_or_get_customer(self, name, cnic, phone=None, address=None, so=None):
+        """Create or update a customer by CNIC, including so + address."""
+        cur = self.conn.cursor()
+        cur.execute("SELECT * FROM customers WHERE cnic = ?", (cnic,))
+        row = cur.fetchone()
         if row:
+            # Update if new values are provided
+            cur.execute("""
+                UPDATE customers
+                SET name = ?, phone = ?, address = ?, so = ?
+                WHERE cnic = ?
+            """, (
+                name or row["name"],
+                phone or row["phone"],
+                address or row["address"],
+                so or row["so"],
+                cnic
+            ))
+            self.conn.commit()
             return row["id"]
-        c.execute(
-            "INSERT INTO customers (name, cnic, phone, address) VALUES (?, ?, ?, ?)",
-            (name, cnic, phone, address),
-        )
-        self.conn.commit()
-        return c.lastrowid
+        else:
+            cur.execute("""
+                INSERT INTO customers (name, cnic, phone, address, so)
+                VALUES (?, ?, ?, ?, ?)
+            """, (name, cnic, phone, address, so))
+            self.conn.commit()
+            return cur.lastrowid
+
+
+
+
 
     # ---------- ACCOUNTS ----------
     def add_account_entry(self, description, debit=0, credit=0):
