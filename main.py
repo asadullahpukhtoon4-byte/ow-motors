@@ -30,6 +30,7 @@ class App(tk.Tk):
         self.configure(bg=THEME['bg'])
         self._setup_styles()
         self._build_login()
+        self.last_search_filters = None
 
     def _setup_styles(self):
         self.style.configure('TFrame', background=THEME['bg'])
@@ -128,21 +129,79 @@ class App(tk.Tk):
                     f.lower()
 
     def on_nav_select(self, key, payload=None):
-        # special search action
+    # special search action
         if key == 'search':
-            q = payload.get('query', '')
+            payload = payload or {}
+            q = (payload.get('query') or '').strip()
             f = payload.get('filter', 'chassis_no')
             filters = {}
-            if f == 'chassis_no':
+
+            # if query empty -> clear search
+            if not q:
+                self.last_search_filters = None
+                if hasattr(self.nav, "sync_with_filters"):
+                    self.nav.sync_with_filters(None)
+
+                if 'inventory' in self.frames:
+                    try:
+                        self.frames['inventory'].load(None)
+                    except Exception:
+                        pass
+                if 'sold' in self.frames:
+                    try:
+                        self.frames['sold'].load(None)
+                    except Exception:
+                        pass
+                self.show_frame('inventory')
+                return
+
+            # build filters
+            if f == 'category':
+                filters['category'] = q
+            elif f == 'chassis_no':
                 filters['chassis_no'] = q
             elif f == 'engine_no':
                 filters['engine_no'] = q
             elif f == 'customer_cnic':
                 filters['customer_cnic'] = q
-            self.frames['inventory'].load(filters)
+
+            # persist filters
+            self.last_search_filters = filters
+            if hasattr(self.nav, "sync_with_filters"):
+                self.nav.sync_with_filters(filters)
+
+            # apply filters to both frames
+            if 'inventory' in self.frames:
+                try:
+                    self.frames['inventory'].load(filters)
+                except Exception:
+                    pass
+            if 'sold' in self.frames:
+                try:
+                    self.frames['sold'].load(filters)
+                except Exception:
+                    pass
+
+            # show inventory by default after search
             self.show_frame('inventory')
             return
+
+        # If navigating to inventory or sold and a search is active, apply it
+        if key in ('inventory', 'sold') and getattr(self, 'last_search_filters', None):
+            try:
+                self.frames[key].load(self.last_search_filters)
+            except Exception:
+                pass
+            if hasattr(self.nav, "sync_with_filters"):
+                self.nav.sync_with_filters(self.last_search_filters)
+            self.show_frame(key)
+            return
+
+        # default behavior
         self.show_frame(key)
+
+
+
 
     def _on_data_changed(self):
         # refresh inventory if present

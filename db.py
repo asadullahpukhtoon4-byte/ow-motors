@@ -83,13 +83,12 @@ class DB:
         """)
 
         # Bookings
-        # Bookings (standalone table - not related to inventory/customers)
-       # in db.py, inside _create_tables()
+        # Bookings (standalone table - not related to inventory/customers
         c.execute("""
             CREATE TABLE IF NOT EXISTS bookings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                booking_no INTEGER UNIQUE,
-                booking_date TEXT DEFAULT CURRENT_DATE,
+                booking_no TEXT UNIQUE,
+                booking_date TEXT DEFAULT CURRENT_TIMESTAMP,
                 name TEXT,
                 so TEXT,
                 cnic TEXT,
@@ -98,10 +97,11 @@ class DB:
                 model TEXT,
                 colour TEXT,
                 specifications TEXT,
-                total_amount REAL,
-                advance REAL,
-                balance REAL,
+                total_amount REAL DEFAULT 0,
+                advance REAL DEFAULT 0,
+                balance REAL DEFAULT 0,
                 delivery_date TEXT,
+                delivered INTEGER DEFAULT 0,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -156,6 +156,9 @@ class DB:
         q = "SELECT * FROM inventory"
         where = []
         params = []
+        if "category" in filters and filters["category"]:
+            where.append("category LIKE ?")
+            params.append("%" + filters["category"] + "%")
         if "chassis_no" in filters and filters["chassis_no"]:
             where.append("chassis_no LIKE ?")
             params.append("%" + filters["chassis_no"] + "%")
@@ -175,6 +178,7 @@ class DB:
         c = self.conn.cursor()
         c.execute(q, params)
         return c.fetchall()
+
 
     # ---------- SOLD BIKES HELPERS ----------
     def add_sold_bike(
@@ -224,15 +228,42 @@ class DB:
         return cur.lastrowid
 
 
+    def list_sold_bikes(self, filters: dict = None, limit=200):
+        """
+        List sold bikes with optional filters:
+          - category
+          - chassis_no
+          - engine_no
+          - customer_cnic
+        """
+        filters = filters or {}
+        q = "SELECT * FROM sold_bikes"
+        where = []
+        params = []
 
-    def list_sold_bikes(self, limit=200):
+        if "category" in filters and filters["category"]:
+            where.append("category LIKE ?")
+            params.append("%" + filters["category"] + "%")
+        if "chassis_no" in filters and filters["chassis_no"]:
+            where.append("chassis_no LIKE ?")
+            params.append("%" + filters["chassis_no"] + "%")
+        if "engine_no" in filters and filters["engine_no"]:
+            where.append("engine_no LIKE ?")
+            params.append("%" + filters["engine_no"] + "%")
+        if "customer_cnic" in filters and filters["customer_cnic"]:
+            where.append("customer_cnic LIKE ?")
+            params.append("%" + filters["customer_cnic"] + "%")
+
+        if where:
+            q += " WHERE " + " AND ".join(where)
+
+        q += " ORDER BY sold_at DESC LIMIT ?"
+        params.append(limit)
+
         c = self.conn.cursor()
-        c.execute("""
-            SELECT * FROM sold_bikes
-            ORDER BY sold_at DESC
-            LIMIT ?
-        """, (limit,))
+        c.execute(q, params)
         return c.fetchall()
+
 
     # ---------- CUSTOMER HELPERS ----------
     def add_or_get_customer(self, name, cnic, phone=None, address=None, so=None):
@@ -266,55 +297,96 @@ class DB:
 
         # ---------- BOOKINGS (standalone) ----------
         # ---------- BOOKINGS ----------
-    def add_booking(
-            self,
-            booking_date: str,
-            name: str,
-            so: str,
-            cnic: str,
-            phone: str,
-            brand: str,
-            model: str,
-            colour: str,
-            specifications: str,
-            total_amount: float = 0.0,
-            advance: float = 0.0,
-            balance: float = 0.0,
-            delivery_date: str = None,
-        ) -> str:
-        """Insert booking and return booking_no."""
+    def add_booking(self,
+                    booking_date=None,
+                    name=None,
+                    so=None,
+                    cnic=None,
+                    phone=None,
+                    brand=None,
+                    model=None,
+                    colour=None,
+                    specifications=None,
+                    total_amount=0.0,
+                    advance=0.0,
+                    balance=0.0,
+                    delivery_date=None,
+                    delivered=0):
+        """Insert booking and return booking_no (generated or existing)."""
+        # make sure bookings table has expected columns
+        self.ensure_bookings_columns()
+
         cur = self.conn.cursor()
-
-        # insert record with temporary NULL booking_no
+        # create a booking_no: numeric sequence starting at 1000 -> format as 5 digits
+        # attempt to fetch last booking_no numeric part
+        cur.execute("SELECT booking_no FROM bookings ORDER BY id DESC LIMIT 1")
+        last = cur.fetchone()
+        if last and last["booking_no"]:
+            try:
+                last_num = int(str(last["booking_no"]).lstrip("B") )
+            except Exception:
+                last_num = 999
+        else:
+            last_num = 999
+        new_num = last_num + 1
+        booking_no =  booking_no = str(10000 + new_num) 
         cur.execute("""
-            INSERT INTO bookings (booking_date, name, so, cnic, phone, brand, model, colour, specifications,
-                                total_amount, advance, balance, delivery_date, booking_no)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
-        """, (booking_date, name, so, cnic, phone, brand, model, colour, specifications,
-            total_amount, advance, balance, delivery_date))
-        
-        new_id = cur.lastrowid
-        # Generate booking_no starting at 10000
-        booking_no = str(10000 + new_id)
-
-    # update row with booking_no
-        cur.execute("UPDATE bookings SET booking_no=? WHERE id=?", (booking_no, new_id))
+            INSERT INTO bookings (
+                booking_no, booking_date, name, so, cnic, phone, brand, model, colour,
+                specifications, total_amount, advance, balance, delivery_date, delivered
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            booking_no, booking_date or datetime.datetime.now().strftime("%d-%m-%Y"),
+            name, so, cnic, phone, brand, model, colour,
+            specifications, total_amount, advance, balance, delivery_date, delivered
+        ))
         self.conn.commit()
         return booking_no
 
 
     def list_bookings(self, limit=200):
+        self.ensure_bookings_columns()
         c = self.conn.cursor()
         c.execute("""
             SELECT id, booking_no, booking_date, name, so, cnic, phone, brand, model, colour,
-                specifications, total_amount, advance, balance, delivery_date, created_at
+                   specifications, total_amount, advance, balance, delivery_date, delivered
             FROM bookings
             ORDER BY created_at DESC
             LIMIT ?
         """, (limit,))
         return c.fetchall()
 
+    def ensure_bookings_columns(self):
+        """Ensure bookings has expected columns (light migration)."""
+        cur = self.conn.cursor()
+        cur.execute("PRAGMA table_info(bookings)")
+        existing = {r[1] for r in cur.fetchall()}
+        expected = {"booking_no", "booking_date", "name", "so", "cnic", "phone",
+                    "brand", "model", "colour", "specifications",
+                    "total_amount", "advance", "balance", "delivery_date",
+                    "delivered", "created_at"}
+        missing = expected - existing
+        for col in missing:
+            if col in ("total_amount", "advance", "balance"):
+                cur.execute(f"ALTER TABLE bookings ADD COLUMN {col} REAL DEFAULT 0")
+            elif col == "delivered":
+                cur.execute(f"ALTER TABLE bookings ADD COLUMN {col} INTEGER DEFAULT 0")
+            else:
+                cur.execute(f"ALTER TABLE bookings ADD COLUMN {col} TEXT")
+        if missing:
+            self.conn.commit()
 
+    def toggle_booking_delivered(self, booking_id: int, value: int):
+        """Set delivered flag (0/1) for booking id."""
+        cur = self.conn.cursor()
+        cur.execute("PRAGMA table_info(bookings)")
+        cols = {r[1] for r in cur.fetchall()}
+        if "delivered" not in cols:
+            cur.execute("ALTER TABLE bookings ADD COLUMN delivered INTEGER DEFAULT 0")
+            self.conn.commit()
+        cur.execute("UPDATE bookings SET delivered = ? WHERE id = ?", (int(value), booking_id))
+        self.conn.commit()
+        return True
 
 
 

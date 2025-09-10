@@ -1,6 +1,5 @@
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
-from reportlab.lib.colors import HexColor
 from reportlab.lib.utils import simpleSplit
 import os, json
 
@@ -13,25 +12,15 @@ OUT_JSON = os.path.join(ASSETS, "booking_coords.json")
 width, height = A4
 c = canvas.Canvas(OUT_PDF, pagesize=A4)
 
-# Colors
-primary = HexColor("#8B0000")
-muted = HexColor("#333333")
-
 # ----- HEADER -----
-c.setFillColor(primary)
-c.rect(0, height - 80, width, 80, fill=1, stroke=0)
-
-c.setFillColor("white")
+c.setFillColor("black")
 c.setFont("Helvetica-Bold", 28)
 c.drawString(40, height - 52, "OW MOTORSPORT")
+
 c.setFont("Helvetica", 11)
 c.drawString(40, height - 70, "Booking Letter")
 
 # Right-side box for date + booking no
-c.setFillColor("white")
-c.rect(width - 240, height - 68, 200, 48, fill=1, stroke=0)
-c.setFillColor(muted)
-
 c.setFont("Helvetica-Bold", 9)
 c.drawString(width - 230, height - 50, "Booking Date:")
 c.setFont("Helvetica", 9)
@@ -43,21 +32,23 @@ c.setFont("Helvetica", 9)
 c.rect(width - 150, height - 68 + 2, 120, 12, stroke=1, fill=0)
 
 # Separator
-c.setStrokeColor("#cccccc")
+c.setStrokeColor("black")
 c.setLineWidth(1)
 c.line(40, height - 88, width - 40, height - 88)
 
 # ----- CUSTOMER DETAILS -----
 c.setFont("Helvetica-Bold", 11)
-c.setFillColor(muted)
-c.drawString(40, height - 110, "Customer Details")
+c.setFillColor("black")
+# moved down from height - 110 → -130
+c.drawString(40, height - 130, "Customer Details")
 
 c.setFont("Helvetica", 10)
-start_y = height - 130
+# also shifted start_y from -130 → -150
+start_y = height - 150
 line_h = 18
 c.drawString(40, start_y, "Name:")
 c.line(90, start_y - 2, 430, start_y - 2)
-c.drawString(440, start_y, "SsO:")
+c.drawString(440, start_y, "S/O:")
 c.line(470, start_y - 2, 560, start_y - 2)
 
 start_y -= line_h
@@ -68,15 +59,13 @@ c.line(330, start_y - 2, 460, start_y - 2)
 
 # ----- BOOKING DETAILS CARD -----
 card_x = 40
+# automatically pushed further down because of new start_y
 card_y = start_y - 40 - 140
 card_w = width - 80
 card_h = 140
-c.setFillColor("#fafafa")
-c.rect(card_x, card_y, card_w, card_h, stroke=0, fill=1)
-c.setStrokeColor("#e6e6e6")
+c.setStrokeColor("black")
 c.rect(card_x, card_y, card_w, card_h, stroke=1, fill=0)
 
-c.setFillColor(muted)
 c.setFont("Helvetica-Bold", 11)
 c.drawString(card_x + 10, card_y + card_h - 20, "Booking Details")
 c.setFont("Helvetica", 10)
@@ -111,9 +100,9 @@ c.drawString(40, sig_y, "Purchaser’s __________________")
 c.drawString(360, sig_y, "Authorized Signature: __________________")
 
 # ----- TERMS -----
-terms = ("This booking confirms the purchase of the above motorcycle. "
-         "The customer agrees to pay the balance before delivery. "
-         "OW MOTORSPORT will deliver on the agreed date subject to availability.")
+terms = ("""• Locally available bikes will be delivered on the confirmed delivery date.
+• For imported bikes, delivery date may vary 1 to 2 months depending on shipment and clearance of consignment.
+""")
 lines = simpleSplit(terms, "Helvetica", 8, width - 80)
 ty = sig_y - 24
 c.setFont("Helvetica", 8)
@@ -134,10 +123,10 @@ c.save()
 coords = {
   "booking_date": [width - 150 + 6, height - 50],
   "booking_no": [width - 150, height - 64],
-  "name": [90.0, height - 130],
-  "so": [470.0, height - 130],
-  "cnic": [90.0, height - 148],
-  "phone": [330.0, height - 148],
+  "name": [90.0, height - 150],       # was -130
+  "so": [470.0, height - 150],
+  "cnic": [90.0, height - 168],       # was -148
+  "phone": [330.0, height - 168],
   "brand": [card_x + 60, card_y + card_h - 40],
   "model": [card_x + 270, card_y + card_h - 40],
   "colour": [card_x + 60, card_y + card_h - 68],
@@ -149,6 +138,7 @@ coords = {
   "purchaser_signature": [40.0, sig_y],
   "authorized_signature": [360.0, sig_y],
 }
+
 
 with open(OUT_JSON, "w", encoding="utf-8") as f:
     json.dump(coords, f, indent=2)

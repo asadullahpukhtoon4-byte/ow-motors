@@ -1,4 +1,5 @@
 # booking_mod.py
+from widgets.scrollable_treeview import ScrollableTreeview
 import os
 import datetime
 import tempfile
@@ -18,6 +19,7 @@ TEMPLATE_PDF_PATH = os.path.join(ASSETS_DIR, "booking_letter.pdf")
 COORDS_PATH = os.path.join(ASSETS_DIR, "booking_coords.json")
 BOOKINGS_DIR = os.path.join(HERE, "bookings")
 os.makedirs(BOOKINGS_DIR, exist_ok=True)
+
 
 # -------------------------------------------------------
 # Unified PDF writer used by both the Frame and the Form
@@ -87,22 +89,33 @@ class BookingFrame(tk.Frame):
         ttk.Button(toolbar, text="Generate PDF", command=self.generate_pdf).pack(side="left", padx=(6, 0))
         ttk.Button(toolbar, text="Edit", command=self.edit_booking).pack(side="left", padx=(6, 0))
         ttk.Button(toolbar, text="Delete", command=self.delete_booking).pack(side="left", padx=(6, 0))
+        ttk.Button(toolbar, text="Toggle Delivered", command=self.toggle_delivered).pack(side="left", padx=(6, 0))
 
+        # Added 'delivered' column at the end
         self.cols = (
             "id", "booking_no", "booking_date", "name", "so", "cnic", "phone",
             "brand", "model", "colour", "specifications",
-            "total_amount", "advance", "balance", "delivery_date"
+            "total_amount", "advance", "balance", "delivery_date", "delivered"
         )
 
-        self.tree = ttk.Treeview(self, columns=self.cols, show="headings", selectmode="browse")
+        # Use scrollable wrapper instead of raw Treeview
+        scroll = ScrollableTreeview(self, columns=self.cols, show="headings", selectmode="browse")
+        self.tree = scroll.get_tree()
+
         for c in self.cols:
             self.tree.heading(c, text=c.replace("_", " ").title())
-            self.tree.column(c, width=120, anchor="center")
+            if c == "id":
+                self.tree.column(c, width=60, anchor="center")
+            elif c == "delivered":
+                self.tree.column(c, width=80, anchor="center")
+            else:
+                self.tree.column(c, width=120, anchor="center")
 
-        self.tree.pack(fill="both", expand=True)
-        scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscroll=scrollbar.set)
-        scrollbar.pack(side="right", fill="y")
+        # Pack wrapper (not tree directly)
+        scroll.pack(fill="both", expand=True)
+
+        # Double click to edit (same as Edit button)
+        self.tree.bind("<Double-1>", lambda e: self.edit_booking())
 
         self.load()
 
@@ -114,8 +127,13 @@ class BookingFrame(tk.Frame):
         rows = self.db.list_bookings()
         for row in rows:
             d = dict(row)
+            # normalize delivered display
+            delivered_flag = d.get("delivered", 0)
+            d["delivered"] = "Yes" if int(delivered_flag or 0) else "No"
             self._rows[d["id"]] = d
-            self.tree.insert("", "end", iid=str(d["id"]), values=tuple(d.get(c, "") for c in self.cols))
+            # ensure tuple order matches self.cols
+            values = tuple(d.get(c, "") for c in self.cols)
+            self.tree.insert("", "end", iid=str(d["id"]), values=values)
 
     # -------------------
     # Toolbar actions
@@ -133,8 +151,13 @@ class BookingFrame(tk.Frame):
         if not row:
             return
         try:
-            out_pdf = os.path.join(BOOKINGS_DIR, f"booking_{row['booking_no']}.pdf")
-            _write_pdf_on_template(out_pdf, row)
+            # ensure we pass raw delivered numeric form to writer (DB value)
+            db_row_cur = self.db.conn.cursor()
+            db_row_cur.execute("SELECT * FROM bookings WHERE id = ?", (row["id"],))
+            db_row = db_row_cur.fetchone()
+            data = dict(db_row) if db_row else row
+            out_pdf = os.path.join(BOOKINGS_DIR, f"booking_{data.get('booking_no', row.get('booking_no'))}.pdf")
+            _write_pdf_on_template(out_pdf, data)
             webbrowser.open("file://" + os.path.abspath(out_pdf))
             messagebox.showinfo("PDF Generated", f"Saved: {out_pdf}")
         except Exception as e:
@@ -144,7 +167,11 @@ class BookingFrame(tk.Frame):
         row = self.get_selected()
         if not row:
             return
-        BookingForm(self, self.db, on_saved=self.load, existing=row)
+        # fetch full DB row (to get numeric delivered etc)
+        cur = self.db.conn.cursor()
+        cur.execute("SELECT * FROM bookings WHERE id = ?", (row["id"],))
+        dbrow = cur.fetchone()
+        BookingForm(self, self.db, on_saved=self.load, existing=dict(dbrow) if dbrow else row)
 
     def delete_booking(self):
         row = self.get_selected()
@@ -158,6 +185,24 @@ class BookingFrame(tk.Frame):
 
     def new_booking(self):
         BookingForm(self, self.db, on_saved=self.load)
+
+    def toggle_delivered(self):
+        """Toggle delivered flag for the selected booking (0/1)."""
+        row = self.get_selected()
+        if not row:
+            return
+        # fetch numeric delivered from DB (in case displayed 'Yes'/'No')
+        cur = self.db.conn.cursor()
+        cur.execute("SELECT delivered FROM bookings WHERE id = ?", (row["id"],))
+        r = cur.fetchone()
+        current = int(r["delivered"]) if r and r["delivered"] is not None else 0
+        new_val = 0 if current else 1
+        try:
+            self.db.toggle_booking_delivered(row["id"], new_val)
+            self.load()
+            messagebox.showinfo("Updated", f"Booking marked as {'delivered' if new_val else 'not delivered'}.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to update delivered status: {e}")
 
 
 class BookingForm(tk.Toplevel):
@@ -206,11 +251,16 @@ class BookingForm(tk.Toplevel):
             self.vars[varname] = v
             ttk.Entry(frm, textvariable=v).grid(row=i, column=1, sticky="ew", pady=4)
 
+        # Delivered checkbox (only visible in edit mode or user can set)
+        ttk.Label(frm, text="Delivered").grid(row=len(fields) + 1, column=0, sticky="w", pady=4)
+        self.delivered_var = tk.IntVar(value=0)
+        ttk.Checkbutton(frm, variable=self.delivered_var).grid(row=len(fields) + 1, column=1, sticky="w", pady=4)
+
         frm.columnconfigure(1, weight=1)
 
         # Buttons
         btn_frame = ttk.Frame(frm)
-        btn_frame.grid(row=len(fields) + 1, column=0, columnspan=2, pady=12, sticky="ew")
+        btn_frame.grid(row=len(fields) + 2, column=0, columnspan=2, pady=12, sticky="ew")
         btn_frame.columnconfigure((0, 1, 2), weight=1)
 
         ttk.Button(btn_frame, text="Save Booking", command=self.save_booking).grid(row=0, column=0, padx=6, sticky="ew")
@@ -219,19 +269,20 @@ class BookingForm(tk.Toplevel):
 
     def fill_existing(self, row):
         """Prefill form with existing booking data for editing."""
-        self.booking_date.set(row["booking_date"])
-        self.vars["name_var"].set(row["name"])
-        self.vars["so_var"].set(row["so"])
-        self.vars["cnic_var"].set(row["cnic"])
-        self.vars["phone_var"].set(row["phone"])
-        self.vars["brand_var"].set(row["brand"])
-        self.vars["model_var"].set(row["model"])
-        self.vars["colour_var"].set(row["colour"])
-        self.vars["specs_var"].set(row["specifications"])
-        self.vars["total_amount_var"].set(row["total_amount"])
-        self.vars["advance_var"].set(row["advance"])
-        self.vars["balance_var"].set(row["balance"])
-        self.vars["delivery_var"].set(row["delivery_date"])
+        self.booking_date.set(row.get("booking_date") or "")
+        self.vars["name_var"].set(row.get("name") or "")
+        self.vars["so_var"].set(row.get("so") or "")
+        self.vars["cnic_var"].set(row.get("cnic") or "")
+        self.vars["phone_var"].set(row.get("phone") or "")
+        self.vars["brand_var"].set(row.get("brand") or "")
+        self.vars["model_var"].set(row.get("model") or "")
+        self.vars["colour_var"].set(row.get("colour") or "")
+        self.vars["specs_var"].set(row.get("specifications") or "")
+        self.vars["total_amount_var"].set(row.get("total_amount") or "")
+        self.vars["advance_var"].set(row.get("advance") or "")
+        self.vars["balance_var"].set(row.get("balance") or "")
+        self.vars["delivery_var"].set(row.get("delivery_date") or "")
+        self.delivered_var.set(int(row.get("delivered") or 0))
 
     def gather_data(self):
         return {
@@ -248,6 +299,7 @@ class BookingForm(tk.Toplevel):
             "advance": float(self.vars["advance_var"].get() or 0),
             "balance": float(self.vars["balance_var"].get() or 0),
             "delivery_date": self.vars["delivery_var"].get().strip(),
+            "delivered": int(self.delivered_var.get() or 0),
         }
 
     def save_booking(self):
@@ -259,12 +311,13 @@ class BookingForm(tk.Toplevel):
                 cur.execute("""
                     UPDATE bookings
                     SET booking_date=?, name=?, so=?, cnic=?, phone=?, brand=?, model=?, colour=?,
-                        specifications=?, total_amount=?, advance=?, balance=?, delivery_date=?
+                        specifications=?, total_amount=?, advance=?, balance=?, delivery_date=?, delivered=?
                     WHERE id=?
                 """, (
                     data["booking_date"], data["name"], data["so"], data["cnic"], data["phone"],
                     data["brand"], data["model"], data["colour"], data["specifications"],
                     data["total_amount"], data["advance"], data["balance"], data["delivery_date"],
+                    data["delivered"],
                     self.existing["id"]
                 ))
                 self.db.conn.commit()
@@ -273,7 +326,7 @@ class BookingForm(tk.Toplevel):
                 # Insert new record; DB.add_booking returns booking_no
                 booking_no = self.db.add_booking(**data)
 
-            # 🔑 Ensure booking_no is in data
+            # Ensure booking_no is in data
             data["booking_no"] = booking_no
 
             # Auto-save PDF
@@ -295,7 +348,7 @@ class BookingForm(tk.Toplevel):
             else:
                 booking_no = self.db.add_booking(**data)
 
-            # 🔑 Ensure booking_no is in data
+            # Ensure booking_no is in data
             data["booking_no"] = booking_no
 
             save_path = filedialog.asksaveasfilename(

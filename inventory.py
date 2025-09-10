@@ -1,4 +1,5 @@
 # inventory.py
+from widgets.scrollable_treeview import ScrollableTreeview
 import os
 import datetime
 import tempfile
@@ -48,14 +49,20 @@ class InventoryFrame(tk.Frame):
 
         ttk.Button(toolbar, text="Refresh", command=self.load).pack(side="left")
         ttk.Button(toolbar, text="Generate Invoice", command=self.generate_invoice).pack(side="left", padx=(6, 0))
+        ttk.Button(toolbar, text="Edit", command=self.edit_selected).pack(side="left", padx=(6, 0))
+        ttk.Button(toolbar, text="Delete", command=self.delete_selected).pack(side="left", padx=(6, 0))
 
+        # define columns first
         self.cols = (
             "id", "brand", "model", "colour", "variant", "category",
             "capacity", "engine_no", "chassis_no", "listed_price", "status"
         )
 
-        self.tree = ttk.Treeview(self, columns=self.cols, show="headings", selectmode="browse")
+        # use ScrollableTreeview wrapper
+        scroll = ScrollableTreeview(self, columns=self.cols, show="headings")
+        self.tree = scroll.get_tree()
 
+        # configure headings and columns
         for c in self.cols:
             heading = c.replace("_", " ").title()
             self.tree.heading(c, text=heading)
@@ -64,34 +71,193 @@ class InventoryFrame(tk.Frame):
             else:
                 self.tree.column(c, width=140, anchor="w")
 
-        self.tree.pack(fill="both", expand=True)
-        scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscroll=scrollbar.set)
-        scrollbar.pack(side="right", fill="y")
+        # pack the scrollable wrapper (not self.tree directly)
+        scroll.pack(fill="both", expand=True)
 
+        # double-click to generate invoice
         self.tree.bind("<Double-1>", lambda e: self.generate_invoice())
+
+        # initial load
         self.load()
 
-    def load(self, filters=None):
-        for r in self.tree.get_children():
-            self.tree.delete(r)
+    def load(self, filters: dict | None = None):
+        """
+        Load inventory rows into the tree.
+        - If filters is None: treat as Refresh and clear any app-level last_search_filters.
+        - Accepts filters dict to pass to db.list_inventory(filters).
+        """
+        # If load called with no filters -> interpret as "Refresh" and clear global last_search_filters
+        if filters is None:
+            try:
+                # walk up ancestors to find the main app object that may hold last_search_filters
+                obj = self
+                while hasattr(obj, "master") and obj is not None:
+                    if hasattr(obj, "last_search_filters"):
+                        obj.last_search_filters = None
+                        break
+                    obj = getattr(obj, "master")
+            except Exception:
+                pass
+
+        # clear tree and cached rows
+        for iid in self.tree.get_children():
+            self.tree.delete(iid)
         self._rows.clear()
 
+        # fetch rows from DB
         rows = self.db.list_inventory(filters or {})
+
         for row in rows:
-            d = dict(row)
-            rid = d["id"]
-            self._rows[rid] = d
-            self.tree.insert(
-                "",
-                "end",
-                iid=str(rid),
-                values=(
-                    d["id"], d["brand"], d["model"], d["colour"], d["variant"],
-                    d["category"], d["capacity"], d["engine_no"], d["chassis_no"],
-                    d["listed_price"], d["status"]
-                ),
-            )
+            # convert sqlite3.Row (or other row-like) to plain dict for .get()
+            if isinstance(row, dict):
+                d = row
+            else:
+                try:
+                    d = dict(row)          # works for sqlite3.Row
+                except Exception:
+                    # fallback: attempt index-based mapping to self.cols
+                    d = {}
+                    for i, col in enumerate(self.cols):
+                        try:
+                            d[col] = row[i]
+                        except Exception:
+                            d[col] = ""
+
+            # get id as int when possible
+            rid = d.get("id") or d.get("ID") or None
+            try:
+                rid = int(rid) if rid is not None else None
+            except Exception:
+                rid = None
+
+            # store in cache by id when available
+            if rid is not None:
+                self._rows[rid] = d
+
+            # build values tuple following self.cols order (keeps UI consistent)
+            values = tuple(d.get(col, "") for col in self.cols)
+
+            # insert into tree (use iid if we have id)
+            if rid is not None:
+                self.tree.insert("", "end", iid=str(rid), values=values)
+            else:
+                self.tree.insert("", "end", values=values)
+
+
+    # -------------------------
+    # EDIT / DELETE added
+    # -------------------------
+    def _get_selected_row(self):
+        sel = self.tree.selection()
+        if not sel:
+            return None, None
+        rid = int(sel[0])
+        row = self._rows.get(rid)
+        return rid, row
+
+    def edit_selected(self):
+        rid, row = self._get_selected_row()
+        if not rid or not row:
+            messagebox.showwarning("Select", "Please select a row to edit")
+            return
+        # open an edit window
+        self._open_edit_window(rid, row)
+
+    def _open_edit_window(self, rid, row):
+        win = tk.Toplevel(self)
+        win.title("Edit Inventory Item")
+        win.geometry("520x480")
+        frm = ttk.Frame(win, padding=12)
+        frm.pack(fill="both", expand=True)
+
+        labels = [
+            ("Brand", "brand"),
+            ("Model", "model"),
+            ("Colour", "colour"),
+            ("Variant", "variant"),
+            ("Category", "category"),
+            ("Capacity", "capacity"),
+            ("Engine No", "engine_no"),
+            ("Chassis No", "chassis_no"),
+            ("Listed Price", "listed_price"),
+            ("Status", "status"),
+        ]
+        entries = {}
+        for i, (lbl, key) in enumerate(labels):
+            ttk.Label(frm, text=lbl).grid(row=i, column=0, sticky="e", padx=6, pady=6)
+            v = tk.StringVar(value=str(row.get(key, "") if row.get(key, None) is not None else ""))
+            ent = ttk.Entry(frm, textvariable=v)
+            ent.grid(row=i, column=1, sticky="ew", padx=6, pady=6)
+            entries[key] = v
+
+        frm.columnconfigure(1, weight=1)
+
+        def save_changes():
+            # collect values
+            upd = {k: entries[k].get().strip() for _, k in labels}
+            # validate numeric field
+            try:
+                listed_price_val = float(upd.get("listed_price") or 0.0)
+            except Exception:
+                messagebox.showerror("Validation", "Listed Price must be a number")
+                return
+
+            try:
+                c = self.db.conn.cursor()
+                c.execute("""
+                    UPDATE inventory SET
+                      brand = ?, model = ?, colour = ?, variant = ?, category = ?, capacity = ?,
+                      engine_no = ?, chassis_no = ?, listed_price = ?, status = ?
+                    WHERE id = ?
+                """, (
+                    upd.get("brand"),
+                    upd.get("model"),
+                    upd.get("colour"),
+                    upd.get("variant"),
+                    upd.get("category"),
+                    upd.get("capacity"),
+                    upd.get("engine_no"),
+                    upd.get("chassis_no"),
+                    listed_price_val,
+                    upd.get("status"),
+                    rid
+                ))
+                self.db.conn.commit()
+                win.destroy()
+                self.load()
+                messagebox.showinfo("Success", "Inventory updated successfully")
+            except sqlite3.IntegrityError as e:
+                # unique constraint (engine_no/chassis no) conflict
+                messagebox.showerror("Error", f"Failed to update inventory. Likely duplicate engine/chassis number.\n{e}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to update inventory:\n{e}")
+
+        ttk.Button(frm, text="Save", command=save_changes).grid(row=len(labels), column=0, columnspan=2, pady=12, sticky="ew")
+
+    def delete_selected(self):
+        rid, row = self._get_selected_row()
+        if not rid or not row:
+            messagebox.showwarning("Select", "Please select a row to delete")
+            return
+        if not messagebox.askyesno("Confirm delete", f"Are you sure you want to delete inventory ID {rid}?"):
+            return
+        try:
+            cur = self.db.conn.cursor()
+            cur.execute("DELETE FROM inventory WHERE id = ?", (rid,))
+            self.db.conn.commit()
+            self.load()
+            messagebox.showinfo("Deleted", "Inventory row deleted")
+        except sqlite3.IntegrityError:
+            # fallback: mark sold if delete prevented by FK
+            try:
+                cur.execute("UPDATE inventory SET status = ? WHERE id = ?", ("sold", rid))
+                self.db.conn.commit()
+                self.load()
+                messagebox.showinfo("Notice", "Could not delete due to DB constraints; marked as sold instead.")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to delete or mark as sold: {e}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to delete inventory: {e}")
 
     # -------------------------
     # Invoice flow
@@ -112,7 +278,6 @@ class InventoryFrame(tk.Frame):
 
     def _on_invoice_saved(self, inventory_id):
         self.load()
-
 
 class InvoiceWindow(tk.Toplevel):
     def __init__(self, parent, db: DB, inventory_id: int, inventory_row: dict, on_saved=None):
@@ -304,10 +469,27 @@ class InvoiceWindow(tk.Toplevel):
                 invoice_no=data.get("invoice_no",""),
                 sold_at=data.get("date")
             )
-            # ✅ Mark inventory as sold
+            
             cur = self.db.conn.cursor()
-            cur.execute("UPDATE inventory SET status = ? WHERE id = ?", ("sold", self.inventory_id))
-            self.db.conn.commit()
+            try:
+                cur.execute("DELETE FROM inventory WHERE id = ?", (self.inventory_id,))
+                self.db.conn.commit()
+            except sqlite3.IntegrityError:
+                # likely a foreign-key constraint; fallback to marking sold
+                try:
+                    cur.execute("UPDATE inventory SET status = ? WHERE id = ?", ("sold", self.inventory_id))
+                    self.db.conn.commit()
+                except Exception:
+                    # last-resort: ignore and continue, user will see error below if needed
+                    pass
+            except Exception as e:
+                # any unexpected error -> fallback to marking sold
+                try:
+                    cur.execute("UPDATE inventory SET status = ? WHERE id = ?", ("sold", self.inventory_id))
+                    self.db.conn.commit()
+                except Exception:
+                    # swallow, later code will report failures via the outer except
+                    pass
 
             # ✅ Debug check (optional, for now)
             cur.execute("SELECT customer_address, customer_so, customer_name FROM sold_bikes WHERE id = ?", (sold_id,))
